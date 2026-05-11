@@ -1,403 +1,275 @@
-# Tai lieu van hanh toan dien du an Edge AI Label Barcode Defect Inspection
+# User Manual – Edge AI Label & Barcode Inspection Hybrid Edition
 
-## 1. Muc tieu tai lieu
-Tai lieu nay mo ta day du toan bo du an theo huong su dung thuc te tai hien truong:
-- Muc tieu he thong
-- Kien truc tong the
-- Cac thanh phan da xay dung
-- Cach cai dat va khoi dong
-- Cach van hanh tren UI
-- Quy trinh fine-tune nhanh 1-10 anh
-- Quy trinh trien khai demo va kiem thu
-- Cau truc thu muc
-- Cau hinh
-- Logging, output, bao tri va mo rong
-- Checklist van hanh cho nguoi dung cuoi va ky su
+## 1. Mục tiêu tài liệu
 
-Tai lieu viet cho doi R&D, ky su trien khai, va user van hanh demo.
+Tài liệu này mô tả cách vận hành hệ thống theo **Scope Ver 2 / Hybrid Edition**. Trọng tâm của phase hiện tại là xây dựng một Edge AI demo ổn định, dễ bàn giao và có vòng lặp cải tiến model rõ ràng:
 
----
+- Edge Device/Jetson AGX Orin chạy inference, visualization, logging, JSON output, Active Learning và Quick Teach nhẹ.
+- PC/Workstation thực hiện annotate, fine-tune, evaluate và export model mới.
+- Không fine-tune trực tiếp trên Jetson trong phase này.
 
-## 2. Tong quan du an
-### 2.1 Bai toan
-He thong can xu ly bai toan inspection tren Edge Device:
-1. Detect vung label trong anh
-2. Crop vung label
-3. Detect code 1D/2D va defect trong vung crop
-4. Decode barcode/QR
-5. Ra quyet dinh OK/NG
-6. Xuat ket qua JSON va anh visualization
+## 2. Kiến trúc tổng thể
 
-### 2.2 Dinh huong xay dung
-- Uu tien kha nang chay tren Edge
-- Uu tien quy trinh thao tac don gian
-- Uu tien kha nang adapt nhanh khi gap case moi
-- Ho tro fine-tune nhanh tu UI
+### 2.1 Edge Device
 
-### 2.3 Doi tuong su dung
-- Ky su Vision
-- Ky su tu dong hoa
-- Ky su trien khai tai line
-- User van hanh demo
+Edge Device đảm nhiệm:
 
----
+1. Nhận ảnh từ upload/webcam/camera.
+2. Chạy cascaded inference pipeline.
+3. Hiển thị ảnh gốc, vùng crop và bounding boxes.
+4. Xuất `InspectionResult` JSON.
+5. Lưu kết quả OK/NG nếu operator yêu cầu.
+6. Collect ảnh NG, low-confidence hoặc manual sample cho vòng lặp training.
+7. Quick Teach nhẹ: chỉnh threshold/mode, stage/apply model artifact mới và rollback staged model khi cần.
 
-## 3. Kien truc he thong
-### 3.1 Pipeline xu ly
-Pipeline hien tai su dung luong cascaded:
-1. Input image
-2. Stage 1: Label detection
-3. Stage 2: Crop + preprocess
-4. Stage 3: Code detection + defect detection + decode
-5. Stage 4: Decision + JSON + visualize
+### 2.2 PC/Workstation
 
-### 3.2 Luong du lieu
-- Anh dau vao -> model label -> lay bbox top confidence
-- Crop theo bbox -> enhance
-- Anh crop -> model code + model defect
-- Anh crop -> pyzbar decode
-- Tong hop ket qua -> decision
-- Tra ket qua cho UI va luu output
+PC/Workstation đảm nhiệm:
+1. Copy `data/collected/` từ Edge về.
+2. Annotate bbox bằng Label Studio/Roboflow.
+3. Fine-tune YOLOv11 cho label/code/defect model.
+4. Evaluate model cũ/mới.
+5. Export `.pt` hoặc TensorRT `.engine`.
+6. Copy model mới về Edge để stage/apply qua manifest `weights/staged/manifest.jsonl`.
 
-### 3.3 Luong adapt case moi
-- User upload 1-10 anh case moi
-- User gan nhan tren UI
-- He thong tao dataset YOLO mini
-- He thong train nhanh tren pretrained
-- Tra ve best.pt moi
-- Cap nhat model path runtime
+## 3. Pipeline xử lý
 
----
+Pipeline hiện tại là cascaded pipeline:
+1. **Label Detection**: detect vùng label, chọn top-1 box confidence cao nhất.
+2. **Crop & Preprocess**: crop vùng label, enhance contrast/brightness và sharpen.
+3. **Code Inspection**: detect `Code1D`/`Code2D`, optionally decode trên crop của code box tốt nhất.
+4. **Defect Inspection**: detect `DefectNG` trên vùng crop label.
+5. **Decision Engine**:
+   - Không có label → NG.
+   - Require code nhưng không detect code → NG.
+   - Require decode nhưng decode fail → NG.
+   - Có defect → NG.
+   - Confidence thấp hơn `inspection.low_conf_threshold` → đánh dấu low-confidence và đề xuất collect.
+6. **Output**: trả về JSON Pydantic, visualization full image và crop image.
 
-## 4. Thanh phan da trien khai
-### 4.1 UI Streamlit (`app.py`)
-Chuc nang da co:
-- Tab Inference
-  - Upload single/multi image
-  - Hien thi visualization full + crop
-  - Hien thi decision, confidence, decode
-  - Hien thi JSON
-  - Save result
-- Tab Fine-tune Model
-  - Chon model target: label/code/defect
-  - Upload 1-10 anh
-  - Gan nhan tung anh
-  - Bam train nhanh
-  - Hien thi duong dan model best.pt
+## 4. Cài đặt
 
-### 4.2 Core Pipeline (`src/edge_inspector/core/inspector.py`)
-Da trien khai:
-- Khoi tao 3 model label/code/defect
-- Convert prediction -> boxes
-- Chay cascaded pipeline
-- Decode barcode co xu ly fallback khi thieu pyzbar
-- Tao `InspectionResult`
-- Ve visualization
-- Save JSON + image
-
-### 4.3 Model wrapper (`src/edge_inspector/core/models.py`)
-- Wrapper `YOLOModel`
-- Validate model path
-- Lazy load model
-- predict() thong nhat tham so
-
-### 4.4 Data schema (`src/edge_inspector/core/schemas.py`)
-- `BoundingBox`
-- `DecodeResult`
-- `InspectionResult`
-- Rang buoc confidence va decision
-
-### 4.5 Config (`src/edge_inspector/utils/config.py`)
-- `load_config()` doc YAML
-- `AppConfig.get("a.b.c")` truy cap key nested
-
-### 4.6 Image utils (`src/edge_inspector/utils/image_ops.py`)
-- crop bbox
-- enhance contrast + sharpen
-- draw boxes + labels
-
-### 4.7 Fine-tune manager (`src/edge_inspector/training/fine_tune.py`)
-- `FineTuneRequest`: model_type, image_label_pairs, base_model_path, output_dir, epochs, image_size
-- `FineTuneManager.prepare_dataset()`:
-  - Tao dataset train mini
-  - Copy image
-  - Tao label YOLO
-  - Tao dataset.yaml
-- `FineTuneManager.run_training()`:
-  - Load pretrained
-  - Train ultralytics
-  - Tra ve duong dan best.pt
-
-### 4.8 Test (`tests/`)
-- test_config
-- test_schema
-- test_fine_tune prepare dataset
-
----
-
-## 5. Cau truc thu muc de van hanh
-
-```text
-Checking-Label/
-  app.py
-  requirements.txt
-  pyproject.toml
-  README.md
-  ScopeOfWork.md
-  configs/
-    config.example.yaml
-    config.yaml                 # user tu tao tu example
-  weights/
-    label_model.pt
-    code_model.pt
-    defect_model.pt
-  outputs/
-  runs/
-    fine_tune/
-  data/
-    fine_tune/
-  src/edge_inspector/
-    core/
-    utils/
-    training/
-  tests/
-  docs/
-    UserManual.md
-```
-
----
-
-## 6. Yeu cau moi truong
-### 6.1 Python
-- Python 3.10+
-
-### 6.2 Thu vien chinh
-- ultralytics
-- opencv-python
-- numpy
-- Pillow
-- streamlit
-- pyzbar
-- pydantic
-- PyYAML
-
-### 6.3 Luu y pyzbar
-Can cai dat zbar trong he dieu hanh de decode on dinh.
-
----
-
-## 7. Huong dan cai dat tu dau
-### 7.1 Tao moi truong
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 7.2 Tao config runtime
-```bash
 cp configs/config.example.yaml configs/config.yaml
+mkdir -p weights
 ```
 
-### 7.3 Chuan bi model
-- Tao thu muc `weights/`
-- Copy 3 file:
-  - `weights/label_model.pt`
-  - `weights/code_model.pt`
-  - `weights/defect_model.pt`
+Copy 3 model vào thư mục `weights/`:
 
-### 7.4 Chay he thong
+```text
+weights/label_model.pt
+weights/code_model.pt
+weights/defect_model.pt
+```
+
+Khởi động UI:
+
 ```bash
 streamlit run app.py
 ```
 
----
+## 5. Cấu hình quan trọng
 
-## 8. Mo ta file cau hinh
-Noi dung mau (`configs/config.example.yaml`):
-- models
-  - label_model_path
-  - code_model_path
-  - defect_model_path
-- inference
-  - image_size
-  - conf_threshold
-  - iou_threshold
-  - max_det
-  - device
-- preprocess
-  - enhance_contrast
-  - sharpen
-  - brightness_alpha
-  - brightness_beta
-  - deskew
-- output
-  - save_dir
-  - save_visualization
-  - save_json
-- training
-  - output_dir
-- ui
-  - page_title
-  - page_icon
+File mẫu nằm tại `configs/config.example.yaml`.
 
-Khuyen nghi:
-- Demo PC: de `device: cpu`
-- Demo Jetson co GPU: dat device phu hop
+### 5.1 Models
 
----
+```yaml
+models:
+  label_model_path: "weights/label_model.pt"
+  code_model_path: "weights/code_model.pt"
+  defect_model_path: "weights/defect_model.pt"
+  deploy_dir: "weights/staged"
+```
 
-## 9. Huong dan van hanh Tab Inference
-### 9.1 Muc tieu
-Danh gia nhanh anh dau vao va cho ket qua inspection.
+### 5.2 Inference
 
-### 9.2 Cac buoc thao tac
-1. Mo tab `Inference`
-2. Upload 1 hoac nhieu anh
-3. Xem:
-   - Anh full voi bbox label
-   - Anh crop voi bbox code/defect
-   - Decision OK/NG
-   - Confidence
-   - Decode text
-   - JSON
-4. Bam `Save Result` neu can luu ket qua
+```yaml
+inference:
+  image_size: 640
+  conf_threshold: 0.25
+  iou_threshold: 0.45
+  max_det: 50
+  device: "cpu"
+```
 
-### 9.3 Dinh dang output
-- JSON: timestamp, image_name, decision, confidence, label_box, code_boxes, defect_boxes, decode_result, notes
-- Image: anh visualize
+Trên Jetson có thể đổi `device` theo môi trường Ultralytics/TensorRT thực tế.
 
-### 9.4 Luu y
-- Neu khong detect duoc label -> ket qua NG voi note thong bao
-- Neu pyzbar khong san sang -> decode false, pipeline van chay
+### 5.3 Inspection mode
 
----
+```yaml
+inspection:
+  mode: "full"
+  low_conf_threshold: 0.55
+  require_code: true
+  require_decode: true
+  inspect_defect: true
+  decode_on_code_crop: true
+```
 
-## 10. Huong dan van hanh Tab Fine-tune Model
-### 10.1 Muc tieu
-Cho user cuoi tu adapt case moi khi model hien tai chua xu ly tot.
+Các mode hỗ trợ:
 
-### 10.2 Cac buoc thao tac chi tiet
-1. Mo tab `Fine-tune Model`
-2. Chon `Target model`
-   - label
-   - code
-   - defect
-3. Chon so epoch (khuyen nghi 3-10 cho demo nhanh)
-4. Upload 1-10 anh cua case moi
-5. Gan nhan cho tung anh theo dropdown
-6. Bam `Train nhanh & cap nhat model`
-7. Cho den khi hien thi `Fine-tune hoan tat`
-8. Lay duong dan `best.pt` moi
-9. Refresh app neu can tai lai model runtime sach
+- `full`: label + code + decode + defect.
+- `label_only`: chỉ kiểm tra label.
+- `code_only`: label crop + code/decode.
+- `defect_only`: label crop + defect.
 
-### 10.3 Ben trong he thong lam gi
-- Luu tam anh upload
-- Tao dataset mini theo format YOLO
-- Tao label full-image bbox de nhanh
-- Tao dataset.yaml
-- Train ultralytics tu pretrained
-- Tra ve checkpoint best
+### 5.4 Active Learning
 
-### 10.4 Luu y chat luong
-- Cach label full-image bbox la workflow nhanh cho demo
-- Muon dat chat luong cao hon can bbox chinh xac
-- Nen thu thap them data da dang
+```yaml
+active_learning:
+  save_dir: "data/collected"
+  auto_collect_ng: false
+  auto_collect_low_conf: false
+  save_visualization: true
+  save_crop: true
+```
 
----
+Khuyến nghị demo ban đầu: để auto-collect tắt, operator chủ động bấm **Collect for Training**. Khi chạy line/stress test có thể bật auto-collect NG/low-confidence.
 
-## 11. Quy trinh demo de xac nhan he thong
-### 11.1 Demo co ban
-1. Chuan bi 20-50 anh test
-2. Chay tab inference
-3. Danh dau case fail
-4. Tong hop NG do miss detect / sai decode / false defect
+## 6. Vận hành UI
 
-### 11.2 Demo adapt nhanh
-1. Lay 1-10 anh fail
-2. Fine-tune trong tab fine-tune
-3. Chay lai inference tren tap fail
-4. So sanh truoc/sau
+### 6.1 Sidebar Runtime Config
 
-### 11.3 Tieu chi danh gia
-- Ty le detect label
-- Ty le decode
-- Ty le defect detection
-- Ty le quyet dinh dung OK/NG
-- Toc do suy luan
+Sidebar cho phép chỉnh nhanh:
 
----
+- Confidence threshold.
+- Low-confidence threshold.
+- Inspection mode.
+- Require code detection.
+- Require successful decode.
+- Inspect defect.
+- Auto collect NG.
+- Auto collect low-confidence.
 
-## 12. Van hanh output va bao cao
-### 12.1 Thu muc output
-- Ket qua luu vao `outputs/`
-- Moi lan save se tao file json va jpg theo timestamp
+Các thay đổi này áp dụng runtime, không ghi đè file YAML.
 
-### 12.2 Cach dung output
-- JSON dung de tich hop MES/SCADA/ERP sau nay
-- Image dung de review va trace loi
+### 6.2 Tab Inference & Collect
 
----
+Thao tác:
 
-## 13. Checklist handover cho user cuoi
-### 13.1 Truoc khi ban giao
-- [ ] Da copy du 3 model vao `weights/`
-- [ ] Da tao `configs/config.yaml`
-- [ ] App chay duoc
-- [ ] Inference tren anh mau OK
-- [ ] Save result tao duoc JSON/JPG
-- [ ] Fine-tune 1 case mau thanh cong
+1. Upload một hoặc nhiều ảnh.
+2. Xem visualization full image và crop label.
+3. Xem decision, confidence, decode result và JSON.
+4. Bấm **Save Result** nếu muốn lưu output vào `outputs/`.
+5. Bấm **Collect for Training** nếu ảnh là case khó/NG/low-confidence.
 
-### 13.2 Sau khi ban giao
-- [ ] User biet upload anh
-- [ ] User biet doc ket qua
-- [ ] User biet quy trinh fine-tune 1-10 anh
-- [ ] User biet thu muc output
+Nếu bật auto-collect, hệ thống tự lưu sample khi kết quả là NG hoặc low-confidence tùy cấu hình.
 
----
+### 6.3 Tab Quick Teach / Models
 
-## 14. Loi thuong gap va cach xu ly
-### Loi 1: Khong tim thay model
-- Nguyen nhan: sai path trong config hoac chua copy model
-- Xu ly: kiem tra `weights/*.pt` va config
+Tab này dùng để:
 
-### Loi 2: Decode khong ra
-- Nguyen nhan: pyzbar/zbar, chat luong anh, crop sai
-- Xu ly: cai zbar, tang preprocess, cai thien data
+- Xem trạng thái 3 model hiện tại.
+- Upload/stage/apply model mới `.pt` hoặc `.engine` vào `weights/staged/`.
+- Ghi manifest `weights/staged/manifest.jsonl` để audit version và rollback nhanh.
+- Apply lại staged artifact cũ nếu model mới chưa đạt.
+- Cập nhật model path runtime cho session hiện tại.
+- Nhắc lại workflow PC fine-tune chuẩn.
 
-### Loi 3: Fine-tune that bai
-- Nguyen nhan: anh loi, label sai, model base loi
-- Xu ly: kiem tra file upload, ten nhan, base model
+Lưu ý: tab này **không train model trực tiếp trên Edge**.
 
-### Loi 4: Toc do cham
-- Nguyen nhan: chay CPU, model nang
-- Xu ly: giam imgsz, dung GPU, chuyen TensorRT
+## 7. Active Learning folder structure
 
----
+```text
+data/collected/
+  ng/
+    images/
+    metadata/
+    visualizations/
+    crops/
+  low_confidence/
+    images/
+    metadata/
+    visualizations/
+    crops/
+  manual/
+    images/
+    metadata/
+    visualizations/
+    crops/
+```
 
-## 15. Dinh huong nang cap tiep theo
-1. Them cong cu gan bbox truc tiep tren UI
-2. Fine-tune co val split that
-3. Quan ly version model
-4. One-click deploy Jetson
-5. Camera realtime + trigger
-6. Dashboard thong ke theo ngay/ca
+Metadata JSON chứa:
 
----
+- `reason`: `NG`, `LOW_CONFIDENCE` hoặc `MANUAL`.
+- `source_image_path`.
+- `visualization_path`.
+- `crop_path`.
+- Toàn bộ `InspectionResult`.
+- Runtime settings tại thời điểm inference.
 
-## 16. SOP van hanh ngan gon cho user
-1. Mo app
-2. Upload anh
-3. Xem OK/NG
-4. Save output
-5. Neu fail: vao fine-tune
-6. Upload 1-10 anh fail + gan nhan
-7. Train nhanh
-8. Chay lai inference xac nhan ket qua
+## 8. PC fine-tune workflow
 
----
+1. Copy `data/collected/` từ Jetson về PC.
+2. Chọn những sample có giá trị, lọc trùng/lỗi.
+3. Annotate bbox bằng Label Studio/Roboflow.
+4. Fine-tune YOLOv11 riêng cho từng model:
+   - `label_model`
+   - `code_model`
+   - `defect_model`
+5. Evaluate precision/recall/mAP và test thực tế.
+6. Export `.pt` hoặc TensorRT `.engine`.
+7. Copy model mới về Jetson.
+8. Apply trong tab **Quick Teach / Models**.
 
-## 17. Ghi chu quan trong
-- Tai lieu nay tap trung vao van hanh demo va adapt nhanh.
-- De dat production grade, can bo sung kiem thu sau, benchmark chuan va quy trinh MLOps day du.
-- Tuy nhien voi hien trang code, he thong da co khung day du de demo toan bo workflow end-to-end.
+## 9. Tiêu chí nghiệm thu phase hiện tại
+
+- Pipeline chạy ổn định theo cascaded flow.
+- UI đúng Scope Ver 2, không còn fine-tune trực tiếp trên Edge.
+- Có decision engine rõ ràng cho label/code/decode/defect.
+- Có Active Learning collect NG/low-confidence/manual với metadata đầy đủ.
+- Có Quick Teach nhẹ để chỉnh threshold/mode và apply model mới.
+- Có test cho schema/config/data collection/fine-tune helper/decision engine/model registry/benchmark summary.
+
+## 10. Ghi chú triển khai Jetson
+
+- Production nên ưu tiên TensorRT `.engine`.
+- Benchmark FPS/memory/stability sau khi có model thật.
+- USB camera/webcam là input phase đầu; GigE/HIK và PLC để phase sau.
+- Nếu dùng `pyzbar`, cần cài thêm thư viện hệ thống `zbar` để decode ổn định.
+
+
+
+## 11. Camera, benchmark và TensorRT helper
+
+### 11.1 Camera Snapshot
+
+UI hiện có tab **Camera Snapshot** để chụp một frame từ USB camera/webcam theo camera index rồi chạy pipeline inference giống tab upload ảnh. Đây là bước đầu cho camera mode; realtime loop tối ưu FPS sẽ làm ở phase tiếp theo.
+
+### 11.2 Benchmark CLI
+
+Sau khi có đủ 3 model thật và folder ảnh test, chạy:
+
+```bash
+python scripts/benchmark.py --config configs/config.yaml --input datasets/test_images --warmup 5 --output-json reports/benchmark.json
+```
+
+Report gồm latency trung bình, P50/P95, FPS average, OK/NG distribution và danh sách latency từng ảnh.
+
+### 11.3 TensorRT export helper
+
+Trên máy có GPU/TensorRT phù hợp, export model:
+
+```bash
+python scripts/export_tensorrt.py --model runs/train/label_v2/weights/best.pt --imgsz 640 --device 0 --half
+```
+
+Lưu ý: TensorRT `.engine` nên build/test trên đúng Jetson/runtime target vì engine phụ thuộc môi trường phần cứng và TensorRT runtime.
+
+### 11.4 Training workflow chi tiết
+
+Xem `docs/TrainingWorkflow.md` để thực hiện luồng: copy `data/collected/` → annotate Label Studio/Roboflow → fine-tune YOLOv11 → evaluate → export TensorRT → stage/apply model trên Edge.
+
+## 12. Audit checkpoint hiện tại
+
+Tài liệu audit checkpoint đầy đủ nằm tại `docs/ProjectAuditCheckpoint.md`. Đây là tài liệu nên đọc cùng User Manual để biết chính xác hệ thống đã làm được gì, còn thiếu gì và roadmap ưu tiên tiếp theo.
+
+Tóm tắt nhanh:
+
+- Đã hoàn thiện nền tảng Hybrid: Edge inference, Streamlit UI, Active Learning, Quick Teach runtime controls và model staging/rollback.
+- Chưa hoàn thiện production Edge deployment: camera realtime tối ưu, TensorRT benchmark chính thức trên Jetson, Docker/systemd, logging rotation và validation với dataset thực tế.
+- Hướng triển khai tiếp theo: integration tests với mock YOLO, output folder theo decision, realtime camera loop, model evaluation report và deployment package.
