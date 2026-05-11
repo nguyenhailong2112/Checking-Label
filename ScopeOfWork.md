@@ -65,9 +65,10 @@ Generate JSON + ảnh visualize
 3. Models & Dataset
 3.1. Ba models chính
 
-Label Detection: Merge data1 + data2 của checkLabel (6 classes Type1–Type6)
-Code Detection: Merge 3 dataset checkCode → classes: code128, code39, datamatrix, qrcode
-Defect Detection: data3 (single class defect) – Hiện tại cách gán nhãn này là hợp lý
+Trên datasets của weights model đã train được hiện tại gồm:
+Label Detection: 6 class: PCLabel, SanDisk, WesternDigitalType1, WesternDigitalType2, WesternDigitalType3, WesternDigitalType4
+Code Detection: 2 class: Code1D và Code2D
+Defect Detection: 1 class: DefectNG
 
 3.2. Training Guidelines
 
