@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
+from PIL import Image
 import yaml
 
 
@@ -42,9 +43,8 @@ class FineTuneManager:
         for src, class_name in request.image_label_pairs:
             if class_name not in class_to_id:
                 raise ValueError(f"Unsupported class '{class_name}' for model {request.model_type}")
-            img = cv2.imread(str(src))
-            if img is None:
-                raise ValueError(f"Failed to read image: {src}")
+            with Image.open(src) as img:
+                img.verify()
 
             dst_image = images_dir / src.name
             shutil.copy2(src, dst_image)

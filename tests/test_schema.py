@@ -1,11 +1,11 @@
-from datetime import datetime
+from edge_inspector.utils.time import utc_now
 
 from edge_inspector.core.schemas import DecodeResult, InspectionResult
 
 
 def test_inspection_result_schema() -> None:
     result = InspectionResult(
-        timestamp=datetime.utcnow(),
+        timestamp=utc_now(),
         image_name="a.jpg",
         decision="OK",
         total_confidence=0.9,

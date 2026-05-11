@@ -7,3 +7,5 @@ def test_load_config() -> None:
     cfg = load_config(Path("configs/config.example.yaml"))
     assert cfg.get("models.label_model_path") == "weights/label_model.pt"
     assert cfg.get("inference.image_size") == 640
+    assert cfg.get("inspection.mode") == "full"
+    assert cfg.get("active_learning.save_dir") == "data/collected"

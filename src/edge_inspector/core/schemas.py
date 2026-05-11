@@ -21,6 +21,15 @@ class DecodeResult(BaseModel):
     code_type: str | None = None
 
 
+class RuntimeSettings(BaseModel):
+    mode: Literal["full", "label_only", "code_only", "defect_only"] = "full"
+    conf_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
+    low_conf_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
+    require_code: bool = True
+    require_decode: bool = True
+    inspect_defect: bool = True
+
+
 class InspectionResult(BaseModel):
     timestamp: datetime
     image_name: str
@@ -30,4 +39,18 @@ class InspectionResult(BaseModel):
     code_boxes: list[BoundingBox]
     defect_boxes: list[BoundingBox]
     decode_result: DecodeResult
+    is_low_confidence: bool = False
+    collection_recommended: bool = False
+    collection_reason: str | None = None
+    runtime: RuntimeSettings | None = None
     notes: list[str] = Field(default_factory=list)
+
+
+class CollectionRecord(BaseModel):
+    timestamp: datetime
+    reason: Literal["NG", "LOW_CONFIDENCE", "MANUAL"]
+    image_name: str
+    source_image_path: str
+    visualization_path: str | None = None
+    crop_path: str | None = None
+    result: InspectionResult
