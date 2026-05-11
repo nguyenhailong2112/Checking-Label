@@ -1,0 +1,30 @@
+# IDE
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+
+# Virtual env
+venv/
+.env
+
+# Dataset
+dataset/
+datasets/
+data/
+videos/
+
+# Outputs
+outputs/
+logs/
+
+# Weights
+weights/
+*.pt
+*.onnx
+*.engine
+
+# OS
+.DS_Store
+Thumbs.db
