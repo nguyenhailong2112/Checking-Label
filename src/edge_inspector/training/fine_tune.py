@@ -20,9 +20,9 @@ class FineTuneRequest:
 
 class FineTuneManager:
     SUPPORTED_CLASSES = {
-        "label": ["Type1", "Type2", "Type3", "Type4", "Type5", "Type6"],
-        "code": ["code128", "code39", "datamatrix", "qrcode"],
-        "defect": ["defect"],
+        "label": ["PCLabel", "SanDisk", "WesternDigitalType1", "WesternDigitalType2", "WesternDigitalType3", "WesternDigitalType4"],
+        "code": ["Code1D", "Code2D"],
+        "defect": ["DefectNG"],
     }
 
     def __init__(self, workspace: Path = Path("data/fine_tune")) -> None:
