@@ -1,0 +1,30 @@
+models:
+  label_model_path: "weights/label_model.pt"
+  code_model_path: "weights/code_model.pt"
+  defect_model_path: "weights/defect_model.pt"
+
+inference:
+  image_size: 640
+  conf_threshold: 0.25
+  iou_threshold: 0.45
+  max_det: 50
+  device: "cpu"
+
+preprocess:
+  enhance_contrast: true
+  sharpen: true
+  brightness_alpha: 1.1
+  brightness_beta: 3
+  deskew: false
+
+output:
+  save_dir: "outputs"
+  save_visualization: true
+  save_json: true
+
+training:
+  output_dir: "runs/fine_tune"
+
+ui:
+  page_title: "Edge AI Label & Barcode Inspection"
+  page_icon: "🧠"

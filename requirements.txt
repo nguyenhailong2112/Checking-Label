@@ -1,0 +1,9 @@
+ultralytics>=8.3.0
+opencv-python>=4.10.0
+numpy>=1.26.0
+Pillow>=10.3.0
+streamlit>=1.45.0
+pyzbar>=0.1.9
+pydantic>=2.7.0
+PyYAML>=6.0.1
+python-dateutil>=2.9.0
