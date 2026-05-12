@@ -14,6 +14,11 @@ def test_inspection_result_schema() -> None:
         defect_boxes=[],
         decode_result=DecodeResult(success=False),
         notes=[],
+        recipe_id="demo_recipe",
+        recipe_confidence=0.8,
+        reason_codes=["recipe_assisted_label"],
     )
     payload = result.model_dump(mode="json")
     assert payload["decision"] == "OK"
+    assert payload["recipe_id"] == "demo_recipe"
+    assert payload["reason_codes"] == ["recipe_assisted_label"]

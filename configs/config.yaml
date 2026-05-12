@@ -38,6 +38,12 @@ active_learning:
   save_visualization: true
   save_crop: true
 
+teach:
+  save_dir: "data/teach"
+  recipe_dir: "data/teach/recipes"
+  use_recipe: false
+  active_recipe_id: ""
+
 training:
   workspace_dir: "data/fine_tune"
   output_dir: "runs/fine_tune"

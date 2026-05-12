@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -44,6 +44,11 @@ class InspectionResult(BaseModel):
     collection_reason: str | None = None
     runtime: RuntimeSettings | None = None
     notes: list[str] = Field(default_factory=list)
+    recipe_id: str | None = None
+    model_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    recipe_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    reason_codes: list[str] = Field(default_factory=list)
+    scores: dict[str, Any] = Field(default_factory=dict)
 
 
 class CollectionRecord(BaseModel):

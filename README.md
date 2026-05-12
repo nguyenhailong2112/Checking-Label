@@ -112,3 +112,20 @@ Workflow PC training chi tiết nằm tại `docs/TrainingWorkflow.md`.
 
 ## Tài liệu chi tiết
 - Xem tài liệu đầy đủ tại `docs/UserManual.md`.
+
+## Scope Ver 2 Plus: Teach Mode / Product Recipe
+
+Sau checkpoint Ver 2, huong phat trien tiep theo la **Teach Mode / Product Recipe**: Edge van uu tien inference on-device, nhung operator co the day he thong bang 1-20 anh mau, ve bbox/ROI cho label/code/defect, approve prediction va tao dataset dung chuan de fine-tune tiep.
+
+Tai lieu moi:
+
+- `docs/ScopeVer2PlusTeachMode.md`: scope cai tien cho Hybrid Edge AI + Teach Mode.
+- `docs/TeachModeImplementationCheckpoint.md`: roadmap ky thuat de trien khai Teach Mode cho ca 3 model label/code/defect.
+
+Tinh than cua ban Plus:
+
+- Lam recipe adaptation truoc, khong ep Jetson train nang ngay tu dau.
+- Label model duoc ho tro bang ROI, crop similarity va product whitelist.
+- Code model duoc ho tro bang ROI, multi-code decode va pattern validation.
+- Defect model duoc ho tro bang ROI, threshold rieng va negative samples.
+- Edge Micro Fine-tune chi la che do nang cao, co benchmark va rollback.

@@ -276,3 +276,33 @@ Checkpoint tiếp theo nên tập trung vào **biến skeleton đúng kiến tr�
 3. Nâng Camera Snapshot thành realtime camera mode.
 4. Thêm integration tests với mock YOLO predictions.
 5. Viết deployment workflow chi tiết.
+
+---
+
+## 8. Scope Ver 2 Plus - Teach Mode Direction
+
+Sau buoi trao doi ngay 12/05/2026, huong phat trien tiep theo duoc chot la **Hybrid Edge AI + Teach Mode / Product Recipe**.
+
+Tai lieu bo sung:
+
+- `docs/ScopeVer2PlusTeachMode.md`
+- `docs/TeachModeImplementationCheckpoint.md`
+
+Muc tieu khong phai bien Jetson thanh training server lon. Muc tieu la them mot lop adaptation tai bien:
+
+1. Operator tao recipe cho product/label moi.
+2. Operator ve bbox/ROI cho label, code va defect tren 1-20 anh.
+3. He thong luu sample approved thanh dataset dung chuan.
+4. Runtime ket hop YOLO confidence voi recipe confidence.
+5. Code duoc validate bang ROI, decode va pattern.
+6. Defect dung ROI, threshold rieng va negative samples.
+7. Edge Micro Fine-tune chi la che do nang cao, co benchmark va rollback.
+
+Uu tien code sau checkpoint nay:
+
+1. Them `src/edge_inspector/teach/` cho schema, recipe, dataset va scoring.
+2. Them Teach Mode UI MVP de nhap/ve bbox.
+3. Them recipe-aware label scoring.
+4. Mo rong code inspection sang multi-code/pattern validation.
+5. Mo rong defect inspection sang ROI/threshold rieng/negative samples.
+6. Sau cung moi them Edge Micro Fine-tune candidate model.

@@ -6,13 +6,19 @@ import importlib.util
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
+
+import numpy as np
 
 from edge_inspector.core.active_learning import ActiveLearningCollector
 from edge_inspector.core.decision import DecisionEngine
 
 from edge_inspector.core.models import YOLOModel
 from edge_inspector.core.schemas import BoundingBox, DecodeResult, InspectionResult, RuntimeSettings
+from edge_inspector.teach.recipe import RecipeStore
+from edge_inspector.teach.schemas import ProductRecipe
+from edge_inspector.teach.scoring import aspect_ratio_score, bbox_iou
 from edge_inspector.utils.config import AppConfig
 from edge_inspector.utils.image_ops import crop_from_xyxy, enhance_image, visualize_boxes, write_image
 from edge_inspector.utils.time import utc_now
@@ -27,6 +33,7 @@ class LabelBarcodeInspector:
         self.code_model = YOLOModel(config.get("models.code_model_path"), "code")
         self.defect_model = YOLOModel(config.get("models.defect_model_path"), "defect")
         self.collector = ActiveLearningCollector(config)
+        self.recipe_store = RecipeStore(config)
         self.decision_engine = DecisionEngine(
             auto_collect_ng=bool(config.get("active_learning.auto_collect_ng", True)),
             auto_collect_low_conf=bool(config.get("active_learning.auto_collect_low_conf", True)),
@@ -97,6 +104,137 @@ class LabelBarcodeInspector:
             class_name=box["class_name"],
         )
 
+    def _active_recipe(self) -> ProductRecipe | None:
+        if not bool(self.config.get("teach.use_recipe", False)):
+            return None
+        recipe_id = str(self.config.get("teach.active_recipe_id", "") or "").strip()
+        if not recipe_id:
+            return None
+        try:
+            return self.recipe_store.load(recipe_id)
+        except FileNotFoundError:
+            logger.warning("Active recipe '%s' not found. Running without recipe.", recipe_id)
+            return None
+
+    @staticmethod
+    def _mean(values: list[float]) -> float:
+        if not values:
+            return 0.0
+        return max(0.0, min(1.0, float(np.mean(values))))
+
+    def _label_recipe_score(self, recipe: ProductRecipe, box: dict) -> dict[str, Any]:
+        reason_codes = ["label_model_prediction"]
+        model_conf = float(box["confidence"])
+        components = [model_conf]
+        expected_roi = recipe.label.expected_roi_xyxy
+        if expected_roi is not None:
+            roi_score = bbox_iou(box["xyxy"], expected_roi)
+            aspect_score = aspect_ratio_score(box["xyxy"], expected_roi)
+            components.extend([roi_score, aspect_score])
+            reason_codes.append("label_roi_match" if roi_score >= 0.3 else "label_roi_mismatch")
+        else:
+            roi_score = None
+            aspect_score = None
+            reason_codes.append("label_recipe_no_roi")
+        final_score = self._mean(components)
+        if final_score >= recipe.label.min_recipe_score:
+            reason_codes.append("recipe_assisted_label")
+        return {
+            "model_confidence": model_conf,
+            "roi_score": roi_score,
+            "aspect_score": aspect_score,
+            "final_score": final_score,
+            "reason_codes": reason_codes,
+        }
+
+    def _code_recipe_score(
+        self,
+        recipe: ProductRecipe,
+        code_boxes: list[dict],
+        decode_result: DecodeResult,
+    ) -> dict[str, Any]:
+        reason_codes: list[str] = []
+        best_code = max(code_boxes, key=lambda x: x["confidence"], default=None)
+        model_conf = float(best_code["confidence"]) if best_code else 0.0
+        components = [model_conf]
+        if not code_boxes:
+            reason_codes.append("code_missing")
+        elif recipe.code.expected_count and len(code_boxes) != recipe.code.expected_count:
+            reason_codes.append("code_count_mismatch")
+        else:
+            reason_codes.append("code_detected")
+
+        roi_score = None
+        if best_code and recipe.code.expected_roi_xyxy is not None:
+            roi_score = bbox_iou(best_code["xyxy"], recipe.code.expected_roi_xyxy)
+            components.append(roi_score)
+            reason_codes.append("code_roi_match" if roi_score >= 0.3 else "code_roi_mismatch")
+
+        pattern_score = None
+        if recipe.code.require_decode:
+            pattern_score = 1.0 if decode_result.success else 0.0
+            reason_codes.append("decode_success" if decode_result.success else "decode_failed")
+            if decode_result.success and recipe.code.pattern:
+                text = decode_result.decoded_text or ""
+                matched = re.fullmatch(recipe.code.pattern, text) is not None
+                pattern_score = 1.0 if matched else 0.0
+                reason_codes.append("code_pattern_ok" if matched else "code_pattern_failed")
+            components.append(pattern_score)
+
+        final_score = self._mean(components)
+        return {
+            "model_confidence": model_conf,
+            "roi_score": roi_score,
+            "pattern_score": pattern_score,
+            "final_score": final_score,
+            "reason_codes": reason_codes,
+        }
+
+    def _defect_recipe_score(self, recipe: ProductRecipe, defect_boxes: list[dict]) -> dict[str, Any]:
+        reason_codes: list[str] = []
+        max_defect_conf = max((float(box["confidence"]) for box in defect_boxes), default=0.0)
+        model_conf = 1.0 - max_defect_conf
+        roi_score = None
+        if defect_boxes:
+            reason_codes.append("defect_found")
+            if recipe.defect.roi_xyxy is not None:
+                roi_score = max(bbox_iou(box["xyxy"], recipe.defect.roi_xyxy) for box in defect_boxes)
+                reason_codes.append("defect_in_roi" if roi_score >= 0.3 else "defect_outside_roi")
+        else:
+            reason_codes.append("no_defect")
+        final_score = model_conf
+        return {
+            "model_confidence": model_conf,
+            "roi_score": roi_score,
+            "final_score": final_score,
+            "reason_codes": reason_codes,
+        }
+
+    def _recipe_scores(
+        self,
+        recipe: ProductRecipe | None,
+        *,
+        label_box: dict | None,
+        code_boxes: list[dict],
+        defect_boxes: list[dict],
+        decode_result: DecodeResult,
+    ) -> tuple[dict[str, Any], list[str], float | None]:
+        if recipe is None:
+            return {}, [], None
+        scores: dict[str, Any] = {}
+        reason_codes: list[str] = []
+        if label_box is not None:
+            scores["label"] = self._label_recipe_score(recipe, label_box)
+            reason_codes.extend(scores["label"]["reason_codes"])
+        if recipe.code.enabled:
+            scores["code"] = self._code_recipe_score(recipe, code_boxes, decode_result)
+            reason_codes.extend(scores["code"]["reason_codes"])
+        if recipe.defect.enabled:
+            scores["defect"] = self._defect_recipe_score(recipe, defect_boxes)
+            reason_codes.extend(scores["defect"]["reason_codes"])
+        final_values = [float(item["final_score"]) for item in scores.values()]
+        return scores, reason_codes, self._mean(final_values) if final_values else None
+
     def run(
         self,
         image: np.ndarray,
@@ -109,6 +247,9 @@ class LabelBarcodeInspector:
         max_det = int(self.config.get("inference.max_det", 50))
         device = str(self.config.get("inference.device", "cpu"))
         notes: list[str] = []
+        recipe = self._active_recipe()
+        if recipe is not None:
+            notes.append(f"Recipe active: {recipe.recipe_id}")
 
         label_pred = self.label_model.predict(image, conf=conf, iou=iou, imgsz=imgsz, max_det=max_det, device=device)[0]
         label_boxes = sorted(self._predict_to_boxes(label_pred), key=lambda x: x["confidence"], reverse=True)
@@ -136,6 +277,10 @@ class LabelBarcodeInspector:
                 collection_reason=outcome.collection_reason,
                 runtime=runtime,
                 notes=outcome.notes,
+                recipe_id=recipe.recipe_id if recipe else None,
+                model_confidence=0.0,
+                recipe_confidence=0.0 if recipe else None,
+                reason_codes=["label_missing"],
             )
             return result, image.copy(), None
 
@@ -179,6 +324,13 @@ class LabelBarcodeInspector:
         label_box_schema = self._box_to_schema(top_label)
         code_box_schemas = [self._box_to_schema(b) for b in code_boxes]
         defect_box_schemas = [self._box_to_schema(b) for b in defect_boxes]
+        scores, recipe_reason_codes, recipe_confidence = self._recipe_scores(
+            recipe,
+            label_box=top_label,
+            code_boxes=code_boxes,
+            defect_boxes=defect_boxes,
+            decode_result=decode_result,
+        )
         outcome = self.decision_engine.evaluate(
             runtime=runtime,
             label_box=label_box_schema,
@@ -202,6 +354,11 @@ class LabelBarcodeInspector:
             collection_reason=outcome.collection_reason,
             runtime=runtime,
             notes=outcome.notes,
+            recipe_id=recipe.recipe_id if recipe else None,
+            model_confidence=outcome.total_confidence,
+            recipe_confidence=recipe_confidence,
+            reason_codes=recipe_reason_codes,
+            scores=scores,
         )
 
         vis = image.copy()
