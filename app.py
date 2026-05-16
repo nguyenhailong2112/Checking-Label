@@ -14,11 +14,13 @@ sys.path.append(str(Path(__file__).parent / "src"))
 
 from edge_inspector.core.inspector import LabelBarcodeInspector
 from edge_inspector.core.model_registry import ModelRegistry
+from edge_inspector.identity.encoder import HistogramIdentityEncoder, TorchFewShotEncoder
+from edge_inspector.identity.gallery import IdentityGalleryStore
 from edge_inspector.teach.dataset import DEFAULT_CLASSES, TeachDatasetWriter
 from edge_inspector.teach.recipe import RecipeStore
 from edge_inspector.teach.schemas import ApprovedAnnotation, ProductRecipe
 from edge_inspector.utils.config import AppConfig, load_config
-from edge_inspector.utils.image_ops import bgr_to_rgb, visualize_boxes
+from edge_inspector.utils.image_ops import bgr_to_rgb, crop_from_xyxy, enhance_image, visualize_boxes
 
 
 MODEL_TARGETS = {
@@ -32,6 +34,16 @@ TARGET_TITLES = {
     "code": "Code 1D/2D",
     "defect": "DefectNG",
 }
+
+
+def required_model_targets(config: AppConfig) -> list[str]:
+    mode = str(config.get("inspection.mode", "full"))
+    required = ["label"]
+    if mode == "code_only":
+        required.append("code")
+    if mode == "defect_only" and bool(config.get("inspection.inspect_defect", True)):
+        required.append("defect")
+    return required
 
 
 def render_app_style() -> None:
@@ -49,9 +61,11 @@ def render_app_style() -> None:
     )
 
 
-def missing_model_paths(config: AppConfig) -> list[Path]:
+def missing_model_paths(config: AppConfig, *, required_only: bool = True) -> list[Path]:
     paths: list[Path] = []
-    for key_path in MODEL_TARGETS.values():
+    targets = required_model_targets(config) if required_only else list(MODEL_TARGETS)
+    for target in targets:
+        key_path = MODEL_TARGETS[target]
         model_path = Path(str(config.get(key_path)))
         if not model_path.exists():
             paths.append(model_path)
@@ -59,16 +73,22 @@ def missing_model_paths(config: AppConfig) -> list[Path]:
 
 
 def render_model_readiness(config: AppConfig) -> None:
-    missing = missing_model_paths(config)
-    if not missing:
-        st.success("Model readiness: all 3 model files are available.")
+    missing_required = missing_model_paths(config, required_only=True)
+    missing_all = missing_model_paths(config, required_only=False)
+    if not missing_required and not missing_all:
+        st.success("Model readiness: all model files are available.")
         return
 
-    st.warning(
-        "Model readiness: missing model files. Inference tabs will be available after copying trained models into weights/."
-    )
-    with st.expander("Missing model files", expanded=False):
-        for path in missing:
+    if not missing_required:
+        st.info("Model readiness: required model files are available for the current mode.")
+        with st.expander("Optional missing model files", expanded=False):
+            for path in missing_all:
+                st.write(f"- `{path}`")
+        return
+
+    st.warning("Model readiness: missing required model files for the current mode.")
+    with st.expander("Missing required model files", expanded=True):
+        for path in missing_required:
             st.write(f"- `{path}`")
 
 def read_image(uploaded_file: Any) -> np.ndarray:
@@ -82,6 +102,19 @@ def option_index(options: list[str], value: str, default: str) -> int:
     return options.index(default)
 
 
+def build_identity_encoder(config: AppConfig):
+    encoder_path = str(config.get("identity.encoder_path", "") or "").strip()
+    if encoder_path and Path(encoder_path).exists():
+        return TorchFewShotEncoder(
+            checkpoint_path=encoder_path,
+            device=str(config.get("identity.device", config.get("inference.device", "cpu"))),
+        )
+    return HistogramIdentityEncoder(
+        image_size=int(config.get("identity.image_size", 224)),
+        hist_bins=int(config.get("identity.hist_bins", 8)),
+    )
+
+
 def config_signature(config: AppConfig) -> tuple[Any, ...]:
     return (
         config.get("models.label_model_path"),
@@ -91,6 +124,12 @@ def config_signature(config: AppConfig) -> tuple[Any, ...]:
         config.get("inference.image_size"),
         config.get("teach.use_recipe"),
         config.get("teach.active_recipe_id"),
+        config.get("identity.enabled"),
+        config.get("identity.gallery_id"),
+        config.get("identity.encoder_path"),
+        config.get("identity.unknown_threshold"),
+        config.get("identity.accept_threshold"),
+        config.get("identity.ambiguous_margin"),
     )
 
 
@@ -172,6 +211,33 @@ def apply_runtime_controls(config: AppConfig) -> None:
             "Auto collect low-confidence",
             bool(config.get("active_learning.auto_collect_low_conf", False)),
         )
+        st.divider()
+        st.subheader("Label Identity")
+        identity_enabled = st.checkbox("Enable open-set identity", bool(config.get("identity.enabled", False)))
+        gallery_id = st.text_input("Identity gallery", value=str(config.get("identity.gallery_id", "default")))
+        encoder_path = st.text_input("Few-shot encoder path", value=str(config.get("identity.encoder_path", "")))
+        unknown_threshold = st.slider(
+            "Unknown threshold",
+            0.0,
+            1.0,
+            float(config.get("identity.unknown_threshold", 0.72)),
+            0.01,
+        )
+        accept_threshold = st.slider(
+            "Accept threshold",
+            0.0,
+            1.0,
+            float(config.get("identity.accept_threshold", 0.82)),
+            0.01,
+        )
+        ambiguous_margin = st.slider(
+            "Ambiguous margin",
+            0.0,
+            0.5,
+            float(config.get("identity.ambiguous_margin", 0.05)),
+            0.01,
+        )
+        collect_unknown = st.checkbox("Collect unknown identity crops", bool(config.get("identity.collect_unknown", True)))
         recipe_store = RecipeStore(config)
         recipes = recipe_store.list_recipes()
         use_recipe = st.checkbox("Use product recipe", bool(config.get("teach.use_recipe", False)))
@@ -197,6 +263,13 @@ def apply_runtime_controls(config: AppConfig) -> None:
         config.data.setdefault("inspection", {})["inspect_defect"] = inspect_defect
         config.data.setdefault("active_learning", {})["auto_collect_ng"] = auto_ng
         config.data.setdefault("active_learning", {})["auto_collect_low_conf"] = auto_low
+        config.data.setdefault("identity", {})["enabled"] = identity_enabled
+        config.data.setdefault("identity", {})["gallery_id"] = gallery_id.strip() or "default"
+        config.data.setdefault("identity", {})["encoder_path"] = encoder_path.strip()
+        config.data.setdefault("identity", {})["unknown_threshold"] = unknown_threshold
+        config.data.setdefault("identity", {})["accept_threshold"] = accept_threshold
+        config.data.setdefault("identity", {})["ambiguous_margin"] = ambiguous_margin
+        config.data.setdefault("identity", {})["collect_unknown"] = collect_unknown
         config.data.setdefault("teach", {})["use_recipe"] = use_recipe
         config.data.setdefault("teach", {})["active_recipe_id"] = active_recipe_id
 
@@ -234,6 +307,62 @@ def render_result_actions(
             st.success(f"Đã collect sample: {record.source_image_path}")
 
 
+def identity_crop_from_result(image: np.ndarray, result, config: AppConfig) -> np.ndarray | None:
+    if result.label_box is None:
+        return None
+    box = result.label_box
+    crop = crop_from_xyxy(image, (box.x1, box.y1, box.x2, box.y2))
+    if crop.size == 0:
+        return None
+    return enhance_image(
+        crop,
+        enhance_contrast=bool(config.get("preprocess.enhance_contrast", True)),
+        sharpen=bool(config.get("preprocess.sharpen", True)),
+        alpha=float(config.get("preprocess.brightness_alpha", 1.1)),
+        beta=int(config.get("preprocess.brightness_beta", 3)),
+    )
+
+
+def render_identity_enroll(
+    *,
+    config: AppConfig,
+    image: np.ndarray,
+    image_name: str,
+    result,
+    key_prefix: str,
+) -> None:
+    if not bool(config.get("identity.enabled", False)):
+        return
+    crop = identity_crop_from_result(image, result, config)
+    if crop is None:
+        return
+
+    expanded = result.identity_prediction is not None and result.identity_prediction.status != "KNOWN_LABEL"
+    with st.expander("Enroll label identity", expanded=expanded):
+        st.image(bgr_to_rgb(crop), caption="Identity crop candidate", use_container_width=True)
+        default_class = ""
+        if result.identity_prediction and result.identity_prediction.predicted_class:
+            default_class = result.identity_prediction.predicted_class
+        class_name = st.text_input("Class name", value=default_class, key=f"identity_class_{key_prefix}")
+        if st.button("Enroll current crop", key=f"identity_enroll_{key_prefix}"):
+            if not class_name.strip():
+                st.error("Class name is required.")
+                return
+            encoder = build_identity_encoder(config)
+            store = IdentityGalleryStore(config)
+            record = store.add_exemplar(
+                class_name=class_name.strip(),
+                image=crop,
+                image_name=image_name,
+                embedding=encoder.encode(crop),
+                encoder_name=encoder.name,
+                unknown_threshold=float(config.get("identity.unknown_threshold", 0.72)),
+                accept_threshold=float(config.get("identity.accept_threshold", 0.82)),
+                ambiguous_margin=float(config.get("identity.ambiguous_margin", 0.05)),
+            )
+            st.success(f"Enrolled {record.class_name} exemplar #{record.exemplar_count}")
+
+
 def auto_collect_if_needed(
     *,
     inspector: LabelBarcodeInspector,
@@ -265,6 +394,7 @@ def auto_collect_if_needed(
 
 def render_inspection_result(
     *,
+    config: AppConfig,
     inspector: LabelBarcodeInspector,
     image: np.ndarray,
     image_name: str,
@@ -315,6 +445,26 @@ def render_inspection_result(
         )
         if result.reason_codes:
             st.caption("Reason codes: " + ", ".join(result.reason_codes))
+    if result.identity_prediction:
+        identity = result.identity_prediction
+        if identity.status == "KNOWN_LABEL":
+            st.success(f"Identity: {identity.predicted_class} ({identity.confidence:.3f})")
+        elif identity.status == "NO_GALLERY":
+            st.info("Identity: gallery is empty. Enroll label crops to start matching.")
+        else:
+            st.warning(f"Identity: {identity.status} ({identity.confidence:.3f})")
+        if identity.matches:
+            st.caption(
+                "Top matches: "
+                + ", ".join(f"{item.class_name}:{item.similarity:.3f}" for item in identity.matches)
+            )
+    render_identity_enroll(
+        config=config,
+        image=image,
+        image_name=image_name,
+        result=result,
+        key_prefix=key_prefix,
+    )
 
     st.json(result.model_dump(mode="json"))
     render_result_actions(
@@ -328,7 +478,7 @@ def render_inspection_result(
 
 
 def inference_tab(config: AppConfig) -> None:
-    missing = missing_model_paths(config)
+    missing = missing_model_paths(config, required_only=True)
     if missing:
         st.error("Chua the chay inference vi thieu model files.")
         for path in missing:
@@ -347,6 +497,7 @@ def inference_tab(config: AppConfig) -> None:
         st.subheader(f"Ảnh: {item.name}")
         image = read_image(item)
         render_inspection_result(
+            config=config,
             inspector=inspector,
             image=image,
             image_name=item.name,
@@ -354,7 +505,7 @@ def inference_tab(config: AppConfig) -> None:
         )
 
 def camera_tab(config: AppConfig) -> None:
-    missing = missing_model_paths(config)
+    missing = missing_model_paths(config, required_only=True)
     if missing:
         st.error("Chua the inspect camera frame vi thieu model files.")
         for path in missing:
@@ -390,6 +541,7 @@ def camera_tab(config: AppConfig) -> None:
     st.image(bgr_to_rgb(frame), caption="Captured frame", use_container_width=True)
     inspector = build_inspector(config, config_signature(config))
     render_inspection_result(
+        config=config,
         inspector=inspector,
         image=frame,
         image_name=f"camera_{int(camera_index)}.jpg",
@@ -564,6 +716,62 @@ def teach_mode_tab(config: AppConfig) -> None:
         st.info("Dataset YOLO da duoc cap nhat trong data/teach/exports/.")
 
 
+def identity_gallery_tab(config: AppConfig) -> None:
+    st.subheader("Identity Gallery")
+    st.caption("Manage few-shot label identity exemplars and prototypes.")
+
+    store = IdentityGalleryStore(config)
+    metadata = store.load()
+    st.write(f"Gallery: `{metadata.gallery_id}`")
+    st.write(f"Encoder: `{metadata.encoder_name}` | dim={metadata.embedding_dim}")
+    st.write(
+        f"Thresholds: unknown={metadata.unknown_threshold:.2f}, "
+        f"accept={metadata.accept_threshold:.2f}, margin={metadata.ambiguous_margin:.2f}"
+    )
+
+    if metadata.classes:
+        rows = [
+            {
+                "class_name": item.class_name,
+                "exemplars": item.exemplar_count,
+            }
+            for item in metadata.classes.values()
+        ]
+        st.dataframe(rows, use_container_width=True)
+    else:
+        st.info("Gallery is empty. Upload crop exemplars below or enroll from an inference result.")
+
+    st.markdown("### Add exemplars")
+    class_name = st.text_input("Target class name", key="gallery_class_name")
+    uploads = st.file_uploader(
+        "Upload label crop images",
+        type=["png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+        key="identity_gallery_uploads",
+    )
+    if uploads and st.button("Enroll uploaded crops"):
+        if not class_name.strip():
+            st.error("Class name is required.")
+            return
+            encoder = build_identity_encoder(config)
+        count = 0
+        for item in uploads:
+            crop = read_image(item)
+            store.add_exemplar(
+                class_name=class_name.strip(),
+                image=crop,
+                image_name=item.name,
+                embedding=encoder.encode(crop),
+                encoder_name=encoder.name,
+                unknown_threshold=float(config.get("identity.unknown_threshold", 0.72)),
+                accept_threshold=float(config.get("identity.accept_threshold", 0.82)),
+                ambiguous_margin=float(config.get("identity.ambiguous_margin", 0.05)),
+            )
+            count += 1
+        st.success(f"Enrolled {count} crop(s) into {class_name.strip()}")
+        st.rerun()
+
+
 def quick_teach_tab(config: AppConfig) -> None:
     st.subheader("Quick Teach & Model Management")
     st.caption("Theo Scope Ver 2: chỉ chỉnh threshold/mode và apply model mới; không fine-tune trực tiếp trên Jetson.")
@@ -640,12 +848,12 @@ def main() -> None:
 
     st.title("Edge AI Label & Barcode Inspection – Hybrid Edition")
     st.caption("Pipeline: Label Detection → Crop/Preprocess → Code + Defect + Decode → OK/NG")
-    render_model_readiness(config)
     apply_runtime_controls(config)
+    render_model_readiness(config)
     render_metrics_panel(config)
 
-    tab_infer, tab_camera, tab_teach, tab_qt = st.tabs(
-        ["Inference & Collect", "Camera Snapshot", "Teach Mode", "Quick Teach / Models"]
+    tab_infer, tab_camera, tab_teach, tab_identity, tab_qt = st.tabs(
+        ["Inference & Collect", "Camera Snapshot", "Teach Mode", "Identity Gallery", "Quick Teach / Models"]
     )
     with tab_infer:
         inference_tab(config)
@@ -653,6 +861,8 @@ def main() -> None:
         camera_tab(config)
     with tab_teach:
         teach_mode_tab(config)
+    with tab_identity:
+        identity_gallery_tab(config)
     with tab_qt:
         quick_teach_tab(config)
 

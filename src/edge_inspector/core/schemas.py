@@ -5,6 +5,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from edge_inspector.identity.schemas import IdentityPrediction
+
 
 class BoundingBox(BaseModel):
     x1: int
@@ -49,6 +51,7 @@ class InspectionResult(BaseModel):
     recipe_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     reason_codes: list[str] = Field(default_factory=list)
     scores: dict[str, Any] = Field(default_factory=dict)
+    identity_prediction: IdentityPrediction | None = None
 
 
 class CollectionRecord(BaseModel):

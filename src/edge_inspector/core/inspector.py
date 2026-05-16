@@ -16,6 +16,10 @@ from edge_inspector.core.decision import DecisionEngine
 
 from edge_inspector.core.models import YOLOModel
 from edge_inspector.core.schemas import BoundingBox, DecodeResult, InspectionResult, RuntimeSettings
+from edge_inspector.identity.encoder import HistogramIdentityEncoder, TorchFewShotEncoder
+from edge_inspector.identity.gallery import IdentityGalleryStore
+from edge_inspector.identity.inference import IdentityRecognizer
+from edge_inspector.identity.schemas import IdentityPrediction
 from edge_inspector.teach.recipe import RecipeStore
 from edge_inspector.teach.schemas import ProductRecipe
 from edge_inspector.teach.scoring import aspect_ratio_score, bbox_iou
@@ -30,13 +34,45 @@ class LabelBarcodeInspector:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
         self.label_model = YOLOModel(config.get("models.label_model_path"), "label")
-        self.code_model = YOLOModel(config.get("models.code_model_path"), "code")
-        self.defect_model = YOLOModel(config.get("models.defect_model_path"), "defect")
+        self.code_model = self._optional_model(config.get("models.code_model_path"), "code")
+        self.defect_model = self._optional_model(config.get("models.defect_model_path"), "defect")
         self.collector = ActiveLearningCollector(config)
         self.recipe_store = RecipeStore(config)
+        self.identity_recognizer = self._build_identity_recognizer()
         self.decision_engine = DecisionEngine(
             auto_collect_ng=bool(config.get("active_learning.auto_collect_ng", True)),
             auto_collect_low_conf=bool(config.get("active_learning.auto_collect_low_conf", True)),
+        )
+
+    @staticmethod
+    def _optional_model(model_path: str | None, task_name: str) -> YOLOModel | None:
+        if not model_path or not Path(str(model_path)).exists():
+            logger.warning("%s model is not available: %s", task_name, model_path)
+            return None
+        return YOLOModel(str(model_path), task_name)
+
+    def _build_identity_recognizer(self) -> IdentityRecognizer | None:
+        if not bool(self.config.get("identity.enabled", False)):
+            return None
+        encoder_path = str(self.config.get("identity.encoder_path", "") or "").strip()
+        if encoder_path and Path(encoder_path).exists():
+            encoder = TorchFewShotEncoder(
+                checkpoint_path=encoder_path,
+                device=str(self.config.get("identity.device", self.config.get("inference.device", "cpu"))),
+            )
+        else:
+            encoder = HistogramIdentityEncoder(
+                image_size=int(self.config.get("identity.image_size", 224)),
+                hist_bins=int(self.config.get("identity.hist_bins", 8)),
+            )
+        gallery_store = IdentityGalleryStore(self.config)
+        return IdentityRecognizer(
+            encoder=encoder,
+            gallery_store=gallery_store,
+            unknown_threshold=float(self.config.get("identity.unknown_threshold", 0.72)),
+            accept_threshold=float(self.config.get("identity.accept_threshold", 0.82)),
+            ambiguous_margin=float(self.config.get("identity.ambiguous_margin", 0.05)),
+            top_k=int(self.config.get("identity.top_k", 3)),
         )
 
     def _predict_to_boxes(self, result: Any) -> list[dict]:
@@ -115,6 +151,18 @@ class LabelBarcodeInspector:
         except FileNotFoundError:
             logger.warning("Active recipe '%s' not found. Running without recipe.", recipe_id)
             return None
+
+    def _identity_prediction(self, crop: np.ndarray) -> IdentityPrediction | None:
+        if self.identity_recognizer is None:
+            return None
+        try:
+            return self.identity_recognizer.predict(crop)
+        except Exception as exc:
+            logger.exception("Identity recognition failed: %s", exc)
+            return IdentityPrediction(
+                status="NO_GALLERY",
+                reason_codes=["identity_error"],
+            )
 
     @staticmethod
     def _mean(values: list[float]) -> float:
@@ -281,6 +329,7 @@ class LabelBarcodeInspector:
                 model_confidence=0.0,
                 recipe_confidence=0.0 if recipe else None,
                 reason_codes=["label_missing"],
+                identity_prediction=None,
             )
             return result, image.copy(), None
 
@@ -293,6 +342,20 @@ class LabelBarcodeInspector:
             alpha=float(self.config.get("preprocess.brightness_alpha", 1.1)),
             beta=int(self.config.get("preprocess.brightness_beta", 3)),
         )
+        identity_prediction = self._identity_prediction(processed_crop)
+        if identity_prediction is not None:
+            notes.append(f"Identity status: {identity_prediction.status}")
+            if (
+                bool(self.config.get("identity.collect_unknown", True))
+                and identity_prediction.status in {"UNKNOWN_LABEL", "LOW_CONF_IDENTITY", "AMBIGUOUS_LABEL"}
+                and self.identity_recognizer is not None
+            ):
+                self.identity_recognizer.gallery_store.save_pending_unknown(
+                    image=processed_crop,
+                    image_name=image_name,
+                    prediction=identity_prediction,
+                )
+                notes.append("Identity crop collected for review")
 
         run_code = runtime.mode in {"full", "code_only"}
         run_defect = runtime.mode in {"full", "defect_only"} and runtime.inspect_defect
@@ -301,7 +364,7 @@ class LabelBarcodeInspector:
         defect_boxes: list[dict] = []
         decode_result = DecodeResult(success=False)
 
-        if run_code:
+        if run_code and self.code_model is not None:
             code_pred = \
             self.code_model.predict(processed_crop, conf=conf, iou=iou, imgsz=imgsz, max_det=max_det, device=device)[0]
             code_boxes = self._predict_to_boxes(code_pred)
@@ -310,14 +373,18 @@ class LabelBarcodeInspector:
                 best_code = sorted(code_boxes, key=lambda x: x["confidence"], reverse=True)[0]
                 decode_target = crop_from_xyxy(processed_crop, best_code["xyxy"])
             decode_result = self._decode_barcode(decode_target)
+        elif run_code:
+            notes.append("Code model missing; code inspection skipped")
         else:
             notes.append("Code inspection skipped by selected mode")
 
-        if run_defect:
+        if run_defect and self.defect_model is not None:
             defect_pred = \
             self.defect_model.predict(processed_crop, conf=conf, iou=iou, imgsz=imgsz, max_det=max_det, device=device)[
                 0]
             defect_boxes = self._predict_to_boxes(defect_pred)
+        elif run_defect:
+            notes.append("Defect model missing; defect inspection skipped")
         else:
             notes.append("Defect inspection skipped by selected mode")
 
@@ -331,6 +398,7 @@ class LabelBarcodeInspector:
             defect_boxes=defect_boxes,
             decode_result=decode_result,
         )
+        identity_reason_codes = identity_prediction.reason_codes if identity_prediction is not None else []
         outcome = self.decision_engine.evaluate(
             runtime=runtime,
             label_box=label_box_schema,
@@ -357,8 +425,9 @@ class LabelBarcodeInspector:
             recipe_id=recipe.recipe_id if recipe else None,
             model_confidence=outcome.total_confidence,
             recipe_confidence=recipe_confidence,
-            reason_codes=recipe_reason_codes,
+            reason_codes=recipe_reason_codes + identity_reason_codes,
             scores=scores,
+            identity_prediction=identity_prediction,
         )
 
         vis = image.copy()

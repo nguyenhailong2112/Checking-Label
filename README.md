@@ -121,6 +121,8 @@ Tai lieu moi:
 
 - `docs/ScopeVer2PlusTeachMode.md`: scope cai tien cho Hybrid Edge AI + Teach Mode.
 - `docs/TeachModeImplementationCheckpoint.md`: roadmap ky thuat de trien khai Teach Mode cho ca 3 model label/code/defect.
+- `docs/ScopeCheckpointLabelDetectionFewShot.md`: scope checkpoint moi cho Label Detection + Open-set Few-shot Label Identity.
+- `docs/ColabTrainingLabelStack.md`: huong dan train Detection, Classification va Few-shot Identity tren Google Colab.
 
 Tinh than cua ban Plus:
 

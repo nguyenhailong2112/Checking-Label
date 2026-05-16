@@ -44,6 +44,20 @@ teach:
   use_recipe: false
   active_recipe_id: ""
 
+identity:
+  enabled: false
+  encoder_path: ""
+  device: "cpu"
+  gallery_dir: "data/identity/galleries"
+  gallery_id: "default"
+  image_size: 224
+  hist_bins: 8
+  unknown_threshold: 0.72
+  accept_threshold: 0.82
+  ambiguous_margin: 0.05
+  top_k: 3
+  collect_unknown: true
+
 training:
   workspace_dir: "data/fine_tune"
   output_dir: "runs/fine_tune"
