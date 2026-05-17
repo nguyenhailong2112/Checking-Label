@@ -291,9 +291,9 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--cls-root", type=Path, default=None)
     parser.add_argument("--cls-name", default="label_classifier_resnet50")
-    parser.add_argument("--cls-epochs", type=int, default=30)
+    parser.add_argument("--cls-epochs", type=int, default=20)
     parser.add_argument("--cls-image-size", type=int, default=224)
-    parser.add_argument("--cls-batch", type=int, default=64)
+    parser.add_argument("--cls-batch", type=int, default=128)
     parser.add_argument("--cls-lr", type=float, default=1e-4)
 
     parser.add_argument("--fewshot-root", type=Path, default=None)
@@ -301,7 +301,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fewshot-epochs", type=int, default=40)
     parser.add_argument("--fewshot-lr", type=float, default=1e-4)
     parser.add_argument("--episodes", type=int, default=200)
-    parser.add_argument("--episode-batch", type=int, default=32)
+    parser.add_argument("--episode-batch", type=int, default=8)
     parser.add_argument("--n-way", type=int, default=5)
     parser.add_argument("--k-shot", type=int, default=3)
     parser.add_argument("--query-num", type=int, default=3)
