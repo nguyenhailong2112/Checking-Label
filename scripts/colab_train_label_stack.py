@@ -309,7 +309,7 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
 
     args.det_data_yaml = args.det_data_yaml or (args.dataset_root / "dataLabelDetection" / "data.yaml")
-    args.cls_root = args.cls_root or (args.dataset_root / "dataLabelClassification")
+    args.cls_root = args.cls_root or (args.dataset_root / "dataLabelClassification_seen")
     args.fewshot_root = args.fewshot_root or (args.dataset_root / "dataLabelClassification_seen")
     return args
 
