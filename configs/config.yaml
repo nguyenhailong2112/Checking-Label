@@ -45,8 +45,8 @@ teach:
   active_recipe_id: ""
 
 identity:
-  enabled: false
-  encoder_path: ""
+  enabled: true
+  encoder_path: "weights/best_fewshot_encoder.pt"
   device: "cpu"
   gallery_dir: "data/identity/galleries"
   gallery_id: "default"
